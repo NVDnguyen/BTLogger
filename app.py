@@ -3,6 +3,7 @@ from bleak import BleakClient, BleakScanner
 import struct
 import csv
 import os
+import winsound
 from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -30,7 +31,8 @@ class BluetoothDashboard(QMainWindow):
         self.devices = []
         self.characteristics = []
         self.csv_file = "sensor_data.csv"
-        self.current_label = ""
+        self.current_state = "" 
+        self.current_true_weight = "" 
         self.is_capturing = False
         self.is_connected = False
         self.data_points = []
@@ -38,10 +40,10 @@ class BluetoothDashboard(QMainWindow):
         self.sample_count = 0
         self.required_samples = 100
         self.accel_plots_visible = True
-        self.accel_plot_height = 300
+        self.accel_plot_height = 200
 
         # Plot configuration
-        self.weight_y_min = -100.0
+        self.weight_y_min = 0.0
         self.weight_y_max = 100.0
         self.accel_y_min = -4.0
         self.accel_y_max = 4.0
@@ -64,7 +66,7 @@ class BluetoothDashboard(QMainWindow):
         if not os.path.exists(self.csv_file):
             with open(self.csv_file, mode="w", newline="") as file:
                 writer = csv.writer(file)
-                writer.writerow(["Timestamp", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z", "Label"])
+                writer.writerow(["Timestamp", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z","True_Weight", "State"])
 
     def apply_stylesheet(self):
         """Apply modern stylesheet to the dashboard."""
@@ -207,17 +209,21 @@ class BluetoothDashboard(QMainWindow):
         csv_layout.addWidget(self.csv_button)
         control_layout.addLayout(csv_layout)
 
-        # Label and sample count input
-        label_sample_layout = QHBoxLayout()
-        self.label_input = QLineEdit()
-        self.label_input.setPlaceholderText("Enter session label")
-        label_sample_layout.addWidget(QLabel("Session Label:"))
-        label_sample_layout.addWidget(self.label_input)
+        # State and sample count input
+        state_sample_layout = QHBoxLayout()
+        self.state_input = QLineEdit()
+        self.state_input.setPlaceholderText("Enter session state")
+        state_sample_layout.addWidget(QLabel("Session State:"))
+        state_sample_layout.addWidget(self.state_input)
+        self.true_weight_input = QLineEdit()
+        self.true_weight_input.setPlaceholderText("Enter true weight (kg)")
+        state_sample_layout.addWidget(QLabel("True Weight:"))
+        state_sample_layout.addWidget(self.true_weight_input)
         self.sample_input = QLineEdit(str(self.required_samples))
         self.sample_input.setPlaceholderText("Number of samples")
-        label_sample_layout.addWidget(QLabel("Samples:"))
-        label_sample_layout.addWidget(self.sample_input)
-        control_layout.addLayout(label_sample_layout)
+        state_sample_layout.addWidget(QLabel("Samples:"))
+        state_sample_layout.addWidget(self.sample_input)
+        control_layout.addLayout(state_sample_layout)
 
         # Start/Stop/Reset buttons
         button_layout = QHBoxLayout()
@@ -524,18 +530,19 @@ class BluetoothDashboard(QMainWindow):
         self.device_combo.setCurrentIndex(0)
         self.uuid_combo.setCurrentIndex(0)
         self.csv_input.setText("sensor_data.csv")
-        self.label_input.clear()
+        self.state_input.clear()
+        self.true_weight_input.clear()
         self.sample_input.setText(str(100))
         self.required_samples = 100
-        self.weight_y_min_input.setText(str(-100.0))
+        self.weight_y_min_input.setText(str(0.0))
         self.weight_y_max_input.setText(str(100.0))
         self.accel_y_min_input.setText(str(-4.0))
         self.accel_y_max_input.setText(str(4.0))
         self.accel_r_max_input.setText(str(4.0))
-        self.accel_height_input.setText(str(300))
-        self.accel_plot_height = 300
-        self.accel_polar_plot.setFixedSize(300, 300)
-        self.accel_line_plot.setMinimumHeight(300)
+        self.accel_height_input.setText(str(200))
+        self.accel_plot_height = 200
+        self.accel_polar_plot.setFixedSize(200, 200)
+        self.accel_line_plot.setMinimumHeight(200)
         self.show_accel_checkbox.setChecked(True)
         self.toggle_accel_plots(Qt.Checked)
         self.weight_curve.setData([], [])
@@ -544,7 +551,7 @@ class BluetoothDashboard(QMainWindow):
         self.accel_x_curve.setData([], [])
         self.accel_y_curve.setData([], [])
         self.accel_z_curve.setData([], [])
-        self.weight_plot.setYRange(-100.0, 100.0)
+        self.weight_plot.setYRange(0.0, 100.0)
         self.accel_line_plot.setYRange(-4.0, 4.0)
         self.accel_polar_plot.setXRange(-4.0, 4.0)
         self.accel_polar_plot.setYRange(-4.0, 4.0)
@@ -558,7 +565,7 @@ class BluetoothDashboard(QMainWindow):
         self.discover_button.setEnabled(False)
         self.connect_button.setEnabled(self.device_combo.currentIndex() > 0)
         self.log("Application reset to initial state.")
-        self.reset_button.setEnabled(True)  # Re-enable reset button
+        self.reset_button.setEnabled(True)
 
     @qasync.asyncSlot()
     async def perform_cleanup(self):
@@ -659,6 +666,7 @@ class BluetoothDashboard(QMainWindow):
         if self.is_capturing:
             self.sample_count += 1
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            true_weight = self.current_true_weight if hasattr(self, 'current_true_weight') else ""
             with open(self.csv_file, mode="a", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow([
@@ -668,12 +676,14 @@ class BluetoothDashboard(QMainWindow):
                     sensor_data["acceleration"][0],
                     sensor_data["acceleration"][1],
                     sensor_data["acceleration"][2],
-                    self.current_label
+                    true_weight,
+                    self.current_state                    
                 ])
             self.update_plot(sensor_data)
-
+            
             if self.sample_count >= self.required_samples:
                 self.log(f"Session completed with {self.sample_count} samples.")
+                winsound.Beep(1000, 200)
                 await self.stop_capture()
 
     @qasync.asyncSlot()
@@ -763,7 +773,7 @@ class BluetoothDashboard(QMainWindow):
         if not self.is_connected or not self.client:
             self.log("Not connected to a device. Please connect first.")
             return
-
+        winsound.Beep(500, 100)
         uuid_index = self.uuid_combo.currentIndex() - 1
         if uuid_index < 0:
             uuid = self.uuid_combo.currentText().strip()
@@ -784,7 +794,17 @@ class BluetoothDashboard(QMainWindow):
             self.log("Error: Invalid number of samples. Please enter a positive integer.")
             return
 
-        self.current_label = self.label_input.text().strip() or "No Label"
+        self.current_state = self.state_input.text().strip() or "No State"
+        true_weight_text = self.true_weight_input.text().strip()
+        try:
+            self.current_true_weight = float(true_weight_text) if true_weight_text else ""
+            if true_weight_text and self.current_true_weight < 0:
+                self.log("Error: True weight must be non-negative.")
+                return
+        except ValueError:
+            self.log("Error: Invalid true weight. Please enter a number or leave empty.")
+            return
+
         if not self.csv_file:
             self.log("Please select a CSV file.")
             return
