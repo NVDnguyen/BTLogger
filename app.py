@@ -41,6 +41,7 @@ class BluetoothDashboard(QMainWindow):
         self.required_samples = 100
         self.accel_plots_visible = True
         self.accel_plot_height = 200
+        self.count_session = 0
 
         # Plot configuration
         self.weight_y_min = 0.0
@@ -66,7 +67,7 @@ class BluetoothDashboard(QMainWindow):
         if not os.path.exists(self.csv_file):
             with open(self.csv_file, mode="w", newline="") as file:
                 writer = csv.writer(file)
-                writer.writerow(["Timestamp", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z","True_Weight", "State"])
+                writer.writerow(["Session", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z","True_Weight", "State"])
 
     def apply_stylesheet(self):
         """Apply modern stylesheet to the dashboard."""
@@ -211,9 +212,16 @@ class BluetoothDashboard(QMainWindow):
 
         # State and sample count input
         state_sample_layout = QHBoxLayout()
+        # Session count input and display        
+        self.count_session_input = QLineEdit(str(self.count_session))
+        state_sample_layout.addWidget(QLabel("Session:"))
+        state_sample_layout.addWidget(self.count_session_input)
+        control_layout.addLayout(state_sample_layout)
+        self.count_session_input.textChanged.connect(self.update_count_session)
+        
         self.state_input = QLineEdit()
         self.state_input.setPlaceholderText("Enter session state")
-        state_sample_layout.addWidget(QLabel("Session State:"))
+        state_sample_layout.addWidget(QLabel("State:"))
         state_sample_layout.addWidget(self.state_input)
         self.true_weight_input = QLineEdit()
         self.true_weight_input.setPlaceholderText("Enter true weight (kg)")
@@ -224,6 +232,13 @@ class BluetoothDashboard(QMainWindow):
         state_sample_layout.addWidget(QLabel("Samples:"))
         state_sample_layout.addWidget(self.sample_input)
         control_layout.addLayout(state_sample_layout)
+        # Checkbox to toggle config_widget visibility
+        self.show_config_splot = QCheckBox("Config")
+        self.show_config_splot.setChecked(True)
+        self.show_config_splot.stateChanged.connect(self.toggle_show_config_splots)
+        control_layout.addWidget(self.show_config_splot)
+
+
 
         # Start/Stop/Reset buttons
         button_layout = QHBoxLayout()
@@ -246,8 +261,8 @@ class BluetoothDashboard(QMainWindow):
         main_layout.addWidget(control_widget)
 
         # Plot configuration
-        config_widget = QWidget()
-        config_layout = QVBoxLayout(config_widget)
+        self.config_widget = QWidget()
+        config_layout = QVBoxLayout(self.config_widget)
         config_layout.setSpacing(8)
 
         # Weight/Temperature plot range
@@ -304,7 +319,7 @@ class BluetoothDashboard(QMainWindow):
         accel_display_layout.addWidget(self.show_accel_checkbox)
         config_layout.addLayout(accel_display_layout)
 
-        main_layout.addWidget(config_widget)
+        main_layout.addWidget(self.config_widget)
 
         # Log and Plot splitter
         splitter = QSplitter(Qt.Vertical)
@@ -484,7 +499,13 @@ class BluetoothDashboard(QMainWindow):
             if widget:
                 widget.setVisible(self.accel_plots_visible)
         self.log(f"Acceleration plots {'shown' if self.accel_plots_visible else 'hidden'}.")
-
+    
+    def toggle_show_config_splots(self, state):
+        if state == Qt.Checked:
+            self.config_widget.show()
+        else:
+            self.config_widget.hide()
+    
     async def cleanup(self):
         """Helper method to stop capture and disconnect client with timeout."""
         self.log("Starting cleanup process...")
@@ -665,12 +686,11 @@ class BluetoothDashboard(QMainWindow):
 
         if self.is_capturing:
             self.sample_count += 1
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             true_weight = self.current_true_weight if hasattr(self, 'current_true_weight') else ""
             with open(self.csv_file, mode="a", newline="") as file:
                 writer = csv.writer(file)
                 writer.writerow([
-                    timestamp,
+                    self.count_session,
                     sensor_data["weight"],
                     sensor_data["temperature"],
                     sensor_data["acceleration"][0],
@@ -681,10 +701,23 @@ class BluetoothDashboard(QMainWindow):
                 ])
             self.update_plot(sensor_data)
             
-            if self.sample_count >= self.required_samples:
+            if self.sample_count == self.required_samples:
+                await self.stop_capture()
                 self.log(f"Session completed with {self.sample_count} samples.")
                 winsound.Beep(1000, 200)
-                await self.stop_capture()
+
+    def update_count_session(self, text):
+        try:
+            self.count_session = int(text)
+        except ValueError:
+            self.log("Invalid session count. Please enter a valid integer.")
+    def update_count_session_display(self):
+        self.count_session_input.blockSignals(True)
+        self.count_session_input.setText(str(self.count_session))
+        self.count_session_input.blockSignals(False) 
+
+        
+                
 
     @qasync.asyncSlot()
     async def scan_devices(self):
@@ -846,6 +879,8 @@ class BluetoothDashboard(QMainWindow):
             self.is_capturing = False
             self.start_button.setEnabled(self.is_connected)
             self.stop_button.setEnabled(False)
+            self.count_session += 1
+            self.update_count_session_display() 
         except Exception as e:
             self.log(f"Error stopping capture: {e}")
 
