@@ -32,7 +32,6 @@ class BluetoothDashboard(QMainWindow):
         self.characteristics = []
         self.csv_file = "sensor_data.csv"
         self.current_state = "" 
-        self.current_true_weight = "" 
         self.is_capturing = False
         self.is_connected = False
         self.data_points = []
@@ -49,6 +48,8 @@ class BluetoothDashboard(QMainWindow):
         self.accel_y_min = -4.0
         self.accel_y_max = 4.0
         self.accel_r_max = 4.0
+        
+        self.is_saving = True
 
         # Setup GUI
         self.init_ui()
@@ -67,7 +68,7 @@ class BluetoothDashboard(QMainWindow):
         if not os.path.exists(self.csv_file):
             with open(self.csv_file, mode="w", newline="") as file:
                 writer = csv.writer(file)
-                writer.writerow(["Session", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z","True_Weight", "State"])
+                writer.writerow(["Timestamp","Session", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z", "State"])
 
     def apply_stylesheet(self):
         """Apply modern stylesheet to the dashboard."""
@@ -223,21 +224,27 @@ class BluetoothDashboard(QMainWindow):
         self.state_input.setPlaceholderText("Enter session state")
         state_sample_layout.addWidget(QLabel("State:"))
         state_sample_layout.addWidget(self.state_input)
-        self.true_weight_input = QLineEdit()
-        self.true_weight_input.setPlaceholderText("Enter true weight (kg)")
-        state_sample_layout.addWidget(QLabel("True Weight:"))
-        state_sample_layout.addWidget(self.true_weight_input)
+
         self.sample_input = QLineEdit(str(self.required_samples))
         self.sample_input.setPlaceholderText("Number of samples")
         state_sample_layout.addWidget(QLabel("Samples:"))
         state_sample_layout.addWidget(self.sample_input)
         control_layout.addLayout(state_sample_layout)
         # Checkbox to toggle config_widget visibility
+        config_save_layout = QHBoxLayout()
+
         self.show_config_splot = QCheckBox("Config")
         self.show_config_splot.setChecked(True)
         self.show_config_splot.stateChanged.connect(self.toggle_show_config_splots)
-        control_layout.addWidget(self.show_config_splot)
+        config_save_layout.addWidget(self.show_config_splot)
 
+        # Save
+        self.save_to_csv = QCheckBox("Save")
+        self.save_to_csv.setChecked(True)
+        self.save_to_csv.stateChanged.connect(self.toggle_save_to_csv)
+        config_save_layout.addWidget(self.save_to_csv)
+
+        control_layout.addLayout(config_save_layout)
 
 
         # Start/Stop/Reset buttons
@@ -505,12 +512,23 @@ class BluetoothDashboard(QMainWindow):
             self.config_widget.show()
         else:
             self.config_widget.hide()
-    
+    def toggle_save_to_csv(self, state):
+        """Enable or disable saving to CSV based on checkbox state."""
+        if state == Qt.Checked:
+            self.log("Saving to CSV enabled.")
+            self.is_saving = True
+        else:
+            self.log("Saving to CSV disabled.")
+            self.is_saving = False
+            
+            
     async def cleanup(self):
         """Helper method to stop capture and disconnect client with timeout."""
         self.log("Starting cleanup process...")
         try:
+            # Stop capture if active
             if self.is_capturing:
+                self.log("Stopping capture...")
                 try:
                     await asyncio.wait_for(self.stop_capture(), timeout=5.0)
                     self.log("Capture stopped successfully.")
@@ -520,7 +538,9 @@ class BluetoothDashboard(QMainWindow):
                     self.start_button.setEnabled(self.is_connected)
                     self.stop_button.setEnabled(False)
 
+            # Disconnect the client if connected
             if self.client and self.client.is_connected:
+                self.log("Disconnecting from device...")
                 try:
                     await asyncio.wait_for(self.client.disconnect(), timeout=5.0)
                     self.log("Disconnected from device successfully.")
@@ -529,11 +549,12 @@ class BluetoothDashboard(QMainWindow):
                 finally:
                     self.is_connected = False
                     self.client = None
+
         except Exception as e:
             self.log(f"Cleanup error: {e}")
             self.is_connected = False
             self.client = None
-            raise
+            raise e  # Re-raise the exception for logging in `perform_cleanup`
         finally:
             self.log("Cleanup process completed.")
 
@@ -552,7 +573,6 @@ class BluetoothDashboard(QMainWindow):
         self.uuid_combo.setCurrentIndex(0)
         self.csv_input.setText("sensor_data.csv")
         self.state_input.clear()
-        self.true_weight_input.clear()
         self.sample_input.setText(str(100))
         self.required_samples = 100
         self.weight_y_min_input.setText(str(0.0))
@@ -591,18 +611,22 @@ class BluetoothDashboard(QMainWindow):
     @qasync.asyncSlot()
     async def perform_cleanup(self):
         """Run cleanup asynchronously and emit completion signal."""
+        self.log("Performing cleanup...")
         try:
             await self.cleanup()
             self.cleanup_completed.emit(True, "")
+            self.log("Cleanup completed successfully.")
         except Exception as e:
             self.cleanup_completed.emit(False, str(e))
+            self.log(f"Cleanup failed: {e}")
 
     def reset_app(self):
         """Reset the application to initial state."""
         self.reset_button.setEnabled(False)  # Disable reset button during operation
         self.log("Initiating reset...")
+
         if self.is_capturing or self.is_connected:
-            # Schedule cleanup asynchronously
+            # Pass the coroutine object (do not execute it here)
             asyncio.run_coroutine_threadsafe(self.perform_cleanup(), self.loop)
         else:
             self.complete_reset()
@@ -684,27 +708,34 @@ class BluetoothDashboard(QMainWindow):
             self.log(f"Error decoding sensor data: {error}")
             return
 
-        if self.is_capturing:
-            self.sample_count += 1
-            true_weight = self.current_true_weight if hasattr(self, 'current_true_weight') else ""
-            with open(self.csv_file, mode="a", newline="") as file:
-                writer = csv.writer(file)
-                writer.writerow([
-                    self.count_session,
-                    sensor_data["weight"],
-                    sensor_data["temperature"],
-                    sensor_data["acceleration"][0],
-                    sensor_data["acceleration"][1],
-                    sensor_data["acceleration"][2],
-                    true_weight,
-                    self.current_state                    
-                ])
+        if self.is_capturing :
             self.update_plot(sensor_data)
+            if self.is_saving:
+                if self.is_capturing and self.sample_count >= self.required_samples:
+                    self.is_capturing = False 
+                    await self.stop_capture()
+                    self.log(f"Session completed with {self.sample_count} samples.")   
+                    return                  
+                    
+                self.sample_count += 1
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                try:
+                    with open(self.csv_file, mode="a", newline="") as file:
+                        writer = csv.writer(file)
+                        writer.writerow([
+                            timestamp,
+                            self.count_session,
+                            sensor_data["weight"],
+                            sensor_data["temperature"],
+                            sensor_data["acceleration"][0],
+                            sensor_data["acceleration"][1],
+                            sensor_data["acceleration"][2],
+                            self.current_state
+                        ])
+                except IOError as e:
+                    self.log(f"Error writing to CSV: {e}")              
+                        
             
-            if self.sample_count == self.required_samples:
-                await self.stop_capture()
-                self.log(f"Session completed with {self.sample_count} samples.")
-                winsound.Beep(1000, 200)
 
     def update_count_session(self, text):
         try:
@@ -715,8 +746,7 @@ class BluetoothDashboard(QMainWindow):
         self.count_session_input.blockSignals(True)
         self.count_session_input.setText(str(self.count_session))
         self.count_session_input.blockSignals(False) 
-
-        
+       
                 
 
     @qasync.asyncSlot()
@@ -827,16 +857,7 @@ class BluetoothDashboard(QMainWindow):
             self.log("Error: Invalid number of samples. Please enter a positive integer.")
             return
 
-        self.current_state = self.state_input.text().strip() or "No State"
-        true_weight_text = self.true_weight_input.text().strip()
-        try:
-            self.current_true_weight = float(true_weight_text) if true_weight_text else ""
-            if true_weight_text and self.current_true_weight < 0:
-                self.log("Error: True weight must be non-negative.")
-                return
-        except ValueError:
-            self.log("Error: Invalid true weight. Please enter a number or leave empty.")
-            return
+        self.current_state = self.state_input.text().strip() or "No State"   
 
         if not self.csv_file:
             self.log("Please select a CSV file.")
@@ -881,8 +902,11 @@ class BluetoothDashboard(QMainWindow):
             self.stop_button.setEnabled(False)
             self.count_session += 1
             self.update_count_session_display() 
+            
         except Exception as e:
             self.log(f"Error stopping capture: {e}")
+        finally:
+            winsound.Beep(1000, 100)
 
     def closeEvent(self, event):
         """Ensure cleanup on window close."""
