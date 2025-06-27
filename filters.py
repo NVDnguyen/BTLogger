@@ -8,7 +8,7 @@ h = np.array([0.0, 0.006233, 0.02485484, 0.05332939, 0.0863577, 0.11709037,
 # Thông số Kalman filter
 Q = 0.01  # Nhiễu quá trình
 R = 0.1   # Nhiễu đo lường
-THRESHOLD = 5.0  # Ngưỡng phát hiện nhiễu xung (kg)
+THRESHOLD = 0.1  # Ngưỡng phát hiện nhiễu xung 
 G = 9.81  # Gia tốc trọng trường (m/s²)
 
 # Biến toàn cục để lưu trạng thái bộ lọc
