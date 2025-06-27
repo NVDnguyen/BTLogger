@@ -795,17 +795,22 @@ class BluetoothDashboard(QMainWindow):
         if self.apply_filter and hasattr(self, "filter_module") and self.filter_module:
             try:
                 if hasattr(self.filter_module, "filter_weight"):
-                    plot_weight = self.filter_module.filter_weight(weights)
+                    # Take the last filtered weight to ensure a scalar or 1D array
+                    filtered_weights = self.filter_module.filter_weight(weights, accel_zs)
+                    plot_weight = filtered_weights[-1] if len(filtered_weights) > 0 else weight
                 if hasattr(self.filter_module, "filter_temperature"):
-                    plot_temperature = self.filter_module.filter_temperature(temps)
+                    plot_temperature = self.filter_module.filter_temperature(temps)[-1] if len(temps) > 0 else temperature
                 if hasattr(self.filter_module, "filter_accel"):
                     plot_accel_x, plot_accel_y, plot_accel_z = self.filter_module.filter_accel(
                         accel_xs, accel_ys, accel_zs
                     )
+                    plot_accel_x = plot_accel_x[-1] if len(plot_accel_x) > 0 else accel_x
+                    plot_accel_y = plot_accel_y[-1] if len(plot_accel_y) > 0 else accel_y
+                    plot_accel_z = plot_accel_z[-1] if len(plot_accel_z) > 0 else accel_z
                 elif hasattr(self.filter_module, "filter_accel_x"):
-                    plot_accel_x = self.filter_module.filter_accel_x(accel_xs)
-                    plot_accel_y = self.filter_module.filter_accel_y(accel_ys)
-                    plot_accel_z = self.filter_module.filter_accel_z(accel_zs)
+                    plot_accel_x = self.filter_module.filter_accel_x(accel_xs)[-1] if len(accel_xs) > 0 else accel_x
+                    plot_accel_y = self.filter_module.filter_accel_y(accel_ys)[-1] if len(accel_ys) > 0 else accel_y
+                    plot_accel_z = self.filter_module.filter_accel_z(accel_zs)[-1] if len(accel_zs) > 0 else accel_z
             except Exception as e:
                 self.log(f"Error applying filter: {e}. Using raw data.")
                 plot_weight = weight
@@ -816,11 +821,11 @@ class BluetoothDashboard(QMainWindow):
 
         # Append plot data to filtered_data_points
         self.filtered_data_points.append({
-            "weight": plot_weight,
-            "temperature": plot_temperature,
-            "accel_x": plot_accel_x,
-            "accel_y": plot_accel_y,
-            "accel_z": plot_accel_z
+            "weight": float(plot_weight),  # Ensure scalar
+            "temperature": float(plot_temperature),
+            "accel_x": float(plot_accel_x),
+            "accel_y": float(plot_accel_y),
+            "accel_z": float(plot_accel_z)
         })
 
         if len(self.filtered_data_points) > self.max_points:

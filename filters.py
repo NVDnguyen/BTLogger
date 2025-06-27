@@ -1,91 +1,60 @@
 import numpy as np
 
-def filter_weight(weights, window_size=5):
-    """
-    Filter the weight data using a moving average to smooth out noise.
-    
-    Parameters:
-    - weights: List or array of weight values (in kg).
-    - window_size: Number of samples to average over (default=5).
-    
-    Returns:
-    - smoothed: The filtered weight value for the latest sample.
-    """
-    if not weights:
-        return 0.0
-    weights = np.array(weights)
-    if len(weights) < window_size:
-        return np.mean(weights)
-    return np.mean(weights[-window_size:])
+# Hệ số Sinc filter
+h = np.array([0.0, 0.006233, 0.02485484, 0.05332939, 0.0863577, 0.11709037,
+              0.13881189, 0.14664562, 0.13881189, 0.11709037, 0.0863577,
+              0.05332939, 0.02485484, 0.006233, 0.0])
 
-def filter_accel(accel_xs, accel_ys, accel_zs, threshold=0.1):
-    """
-    Filter acceleration data using an exponential moving average with a threshold.
+# Thông số Kalman filter
+Q = 0.01  # Nhiễu quá trình
+R = 0.1   # Nhiễu đo lường
+THRESHOLD = 5.0  # Ngưỡng phát hiện nhiễu xung (kg)
+G = 9.81  # Gia tốc trọng trường (m/s²)
+
+# Biến toàn cục để lưu trạng thái bộ lọc
+filter_state = {
+    'buffer': None,  # Bộ đệm Sinc filter
+    'x': 0.0,       # Trạng thái Kalman (khối lượng)
+    'P': 1.0        # Hiệp phương sai Kalman
+}
+
+def filter_weight(weights, accel_zs):
+    global filter_state
     
-    Parameters:
-    - accel_xs, accel_ys, accel_zs: Lists or arrays of acceleration values (in g).
-    - threshold: Minimum change in acceleration to consider as significant (default=0.1 g).
+    # Chuyển inputs thành mảng NumPy
+    weights = np.array(weights, dtype=float)
+    accel_zs = np.array(accel_zs, dtype=float)
     
-    Returns:
-    - xs, ys, zs: Filtered acceleration values for the latest sample.
-    """
-    if not accel_xs or not accel_ys or not accel_zs:
-        return 0.0, 0.0, 0.0
+    # Kiểm tra shape
+    if weights.shape != accel_zs.shape:
+        raise ValueError(f"Shape mismatch: weights {weights.shape}, accel_zs {accel_zs.shape}")
     
-    accel_xs = np.array(accel_xs)
-    accel_ys = np.array(accel_ys)
-    accel_zs = np.array(accel_zs)
+    N = len(h)  # Độ dài Sinc filter
+    filtered_weights = np.zeros(len(weights))
     
-    xs = accel_xs[-1]
-    ys = accel_ys[-1]
-    zs = accel_zs[-1]
+    # Khởi tạo bộ đệm nếu chưa có
+    if filter_state['buffer'] is None:
+        filter_state['buffer'] = np.zeros(N)
     
-    alpha = 0.2
-    if len(accel_xs) >= 2:
-        prev_xs = filter_accel.prev_xs if hasattr(filter_accel, 'prev_xs') else accel_xs[-2]
-        prev_ys = filter_accel.prev_ys if hasattr(filter_accel, 'prev_ys') else accel_ys[-2]
-        prev_zs = filter_accel.prev_zs if hasattr(filter_accel, 'prev_zs') else accel_zs[-2]
+    # Sinc filter và Kalman filter
+    for i in range(len(weights)):
+        # Sinc filter
+        filter_state['buffer'] = np.roll(filter_state['buffer'], 1)
+        filter_state['buffer'][0] = weights[i]
+        sinc_out = np.sum(filter_state['buffer'] * h)
         
-        if abs(accel_xs[-1] - prev_xs) > threshold:
-            xs = alpha * accel_xs[-1] + (1 - alpha) * prev_xs
-        else:
-            xs = prev_xs
-            
-        if abs(accel_ys[-1] - prev_ys) > threshold:
-            ys = alpha * accel_ys[-1] + (1 - alpha) * prev_ys
-        else:
-            ys = prev_ys
-            
-        if abs(accel_zs[-1] - prev_zs) > threshold:
-            zs = alpha * accel_zs[-1] + (1 - alpha) * prev_zs
-        else:
-            zs = prev_zs
+        # Bù gia tốc
+        mass = sinc_out / (G + accel_zs[i]) if (G + accel_zs[i]) != 0 else 0.0
+        
+        # Kalman filter
+        x_pred = filter_state['x']
+        P_pred = filter_state['P'] + Q
+        temp_R = R
+        if abs(mass - x_pred) > THRESHOLD:
+            temp_R = 10.0  # Giảm trọng số phép đo
+        K = P_pred / (P_pred + temp_R)
+        filter_state['x'] = x_pred + K * (mass - x_pred)
+        filter_state['P'] = (1.0 - K) * P_pred
+        filtered_weights[i] = filter_state['x']
     
-    filter_accel.prev_xs = xs
-    filter_accel.prev_ys = ys
-    filter_accel.prev_zs = zs
-    
-    return xs, ys, zs
-
-filter_accel.prev_xs = 0.0
-filter_accel.prev_ys = 0.0
-filter_accel.prev_zs = 0.0
-
-def filter_temperature(data):
-    """Pass-through filter for temperature."""
-    return data[-1] if data else 0.0
-
-def filter_accel_x(data):
-    """Wrapper for accel_x filtering."""
-    xs, _, _ = filter_accel(data, [0]*len(data), [0]*len(data))
-    return xs
-
-def filter_accel_y(data):
-    """Wrapper for accel_y filtering."""
-    _, ys, _ = filter_accel([0]*len(data), data, [0]*len(data))
-    return ys
-
-def filter_accel_z(data):
-    """Wrapper for accel_z filtering."""
-    _, _, zs = filter_accel([0]*len(data), [0]*len(data), data)
-    return zs
+    return filtered_weights
