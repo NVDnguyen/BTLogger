@@ -27,6 +27,10 @@ class BluetoothDashboard(QMainWindow):
         self.setGeometry(100, 100, 1000, 700)
 
         # Initialize variables
+        self.filtered_data_points = []
+        self.apply_filter = False
+        self.filter_module = None
+        self.filter_checkbox = None 
         self.client = None
         self.devices = []
         self.characteristics = []
@@ -41,7 +45,7 @@ class BluetoothDashboard(QMainWindow):
         self.accel_plots_visible = True
         self.accel_plot_height = 200
         self.count_session = 0
-
+        self.true_weight = 0
         # Plot configuration
         self.weight_y_min = 0.0
         self.weight_y_max = 100.0
@@ -68,7 +72,7 @@ class BluetoothDashboard(QMainWindow):
         if not os.path.exists(self.csv_file):
             with open(self.csv_file, mode="w", newline="") as file:
                 writer = csv.writer(file)
-                writer.writerow(["Timestamp","Session", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z", "State"])
+                writer.writerow(["Timestamp","Session", "Weight", "Temperature", "Accel_X", "Accel_Y", "Accel_Z", "True_Weight", "State"])
 
     def apply_stylesheet(self):
         """Apply modern stylesheet to the dashboard."""
@@ -210,7 +214,26 @@ class BluetoothDashboard(QMainWindow):
         self.csv_button.clicked.connect(self.select_csv_file)
         csv_layout.addWidget(self.csv_button)
         control_layout.addLayout(csv_layout)
-
+        # Filter file selection
+        filter_layout = QHBoxLayout()
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Select file filter (*.py)")
+        self.filter_button = QPushButton("Browse")
+        self.filter_button.clicked.connect(self.select_filter_file)
+        self.reload_filter_button = QPushButton("Reload")
+        self.reload_filter_button.clicked.connect(self.load_filter_module)
+        filter_layout.addWidget(QLabel("Filter File:"))
+        filter_layout.addWidget(self.filter_input)
+        filter_layout.addWidget(self.filter_button)
+        filter_layout.addWidget(self.reload_filter_button)        
+        # Checkbox to apply filter
+        self.apply_filter = QCheckBox("Apply")
+        self.apply_filter.setChecked(False)
+        self.apply_filter.stateChanged.connect(self.toggle_apply_filter)
+        filter_layout.addWidget(self.apply_filter)
+        control_layout.addLayout(filter_layout)
+        
+        
         # State and sample count input
         state_sample_layout = QHBoxLayout()
         # Session count input and display        
@@ -224,11 +247,17 @@ class BluetoothDashboard(QMainWindow):
         self.state_input.setPlaceholderText("Enter session state")
         state_sample_layout.addWidget(QLabel("State:"))
         state_sample_layout.addWidget(self.state_input)
+        
 
+        self.true_weight_input = QLineEdit()
+        state_sample_layout.addWidget(QLabel("True Weight:"))
+        state_sample_layout.addWidget(self.true_weight_input)
+        
         self.sample_input = QLineEdit(str(self.required_samples))
         self.sample_input.setPlaceholderText("Number of samples")
         state_sample_layout.addWidget(QLabel("Samples:"))
         state_sample_layout.addWidget(self.sample_input)
+        
         control_layout.addLayout(state_sample_layout)
         # Checkbox to toggle config_widget visibility
         config_save_layout = QHBoxLayout()
@@ -397,6 +426,32 @@ class BluetoothDashboard(QMainWindow):
 
         # Enable Connect button when a device is selected
         self.device_combo.currentIndexChanged.connect(self.update_connect_button)
+    
+    def select_filter_file(self):
+        file_name, _ = QFileDialog.getOpenFileName(
+            self, "Select Filter File", "", "Python Files (*.py)"
+        )
+        if file_name:
+            self.filter_input.setText(file_name)
+            # Gọi load ngay để lần đầu
+            self.load_filter_module()
+
+    def load_filter_module(self):
+        """Dynamic import và reload module chứa các hàm filter."""
+        path = self.filter_input.text().strip()
+        if not os.path.isfile(path):
+            self.log(f"Filter file không tồn tại: {path}")
+            return
+        try:
+            import importlib.util, sys
+            spec = importlib.util.spec_from_file_location("user_filters", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            # Lưu module vào self
+            self.filter_module = module
+            self.log(f"Đã load filter module từ {path}")
+        except Exception as e:
+            self.log(f"Lỗi load filter module: {e}")
 
     def add_polar_grid(self):
         """Add polar grid to the acceleration polar plot."""
@@ -568,6 +623,7 @@ class BluetoothDashboard(QMainWindow):
     def complete_reset(self):
         """Finalize reset after cleanup."""
         self.data_points.clear()
+        self.filtered_data_points.clear()  # Clear filtered data
         self.sample_count = 0
         self.device_combo.setCurrentIndex(0)
         self.uuid_combo.setCurrentIndex(0)
@@ -586,6 +642,8 @@ class BluetoothDashboard(QMainWindow):
         self.accel_line_plot.setMinimumHeight(200)
         self.show_accel_checkbox.setChecked(True)
         self.toggle_accel_plots(Qt.Checked)
+        self.filter_checkbox.setChecked(False)  # Reset filter checkbox
+        self.apply_filter = False  # Reset filter state
         self.weight_curve.setData([], [])
         self.temp_curve.setData([], [])
         self.accel_scatter.setData([], [])
@@ -607,7 +665,6 @@ class BluetoothDashboard(QMainWindow):
         self.connect_button.setEnabled(self.device_combo.currentIndex() > 0)
         self.log("Application reset to initial state.")
         self.reset_button.setEnabled(True)
-
     @qasync.asyncSlot()
     async def perform_cleanup(self):
         """Run cleanup asynchronously and emit completion signal."""
@@ -630,7 +687,70 @@ class BluetoothDashboard(QMainWindow):
             asyncio.run_coroutine_threadsafe(self.perform_cleanup(), self.loop)
         else:
             self.complete_reset()
-
+    def toggle_apply_filter(self, state):
+        """Toggle the application of filters based on checkbox state."""
+        self.apply_filter = state == Qt.Checked
+        if self.apply_filter:
+            if hasattr(self, "filter_module") and self.filter_module:
+                self.log("Filters will be applied to sensor data.")
+                # Synchronize filtered_data_points with data_points
+                self.filtered_data_points = []
+                for dp in self.data_points:
+                    weights = [dp["weight"] for dp in self.data_points]
+                    temps = [dp["temperature"] for dp in self.data_points]
+                    accel_xs = [dp["accel_x"] for dp in self.data_points]
+                    accel_ys = [dp["accel_y"] for dp in self.data_points]
+                    accel_zs = [dp["accel_z"] for dp in self.data_points]
+                    try:
+                        filtered_weight = self.filter_module.filter_weight(weights) if hasattr(self.filter_module, "filter_weight") else dp["weight"]
+                        filtered_temperature = self.filter_module.filter_temperature(temps) if hasattr(self.filter_module, "filter_temperature") else dp["temperature"]
+                        if hasattr(self.filter_module, "filter_accel"):
+                            filtered_accel_x, filtered_accel_y, filtered_accel_z = self.filter_module.filter_accel(accel_xs, accel_ys, accel_zs)
+                        else:
+                            filtered_accel_x = self.filter_module.filter_accel_x(accel_xs) if hasattr(self.filter_module, "filter_accel_x") else dp["accel_x"]
+                            filtered_accel_y = self.filter_module.filter_accel_y(accel_ys) if hasattr(self.filter_module, "filter_accel_y") else dp["accel_y"]
+                            filtered_accel_z = self.filter_module.filter_accel_z(accel_zs) if hasattr(self.filter_module, "filter_accel_z") else dp["accel_z"]
+                    except Exception as e:
+                        self.log(f"Error applying filter during toggle: {e}. Using raw data.")
+                        filtered_weight = dp["weight"]
+                        filtered_temperature = dp["temperature"]
+                        filtered_accel_x = dp["accel_x"]
+                        filtered_accel_y = dp["accel_y"]
+                        filtered_accel_z = dp["accel_z"]
+                    self.filtered_data_points.append({
+                        "weight": filtered_weight,
+                        "temperature": filtered_temperature,
+                        "accel_x": filtered_accel_x,
+                        "accel_y": filtered_accel_y,
+                        "accel_z": filtered_accel_z
+                    })
+            else:
+                self.log("Warning: No filter module loaded. Raw data will be used.")
+                self.apply_filter = False
+                self.filter_checkbox.setChecked(False)
+                # Copy raw data to filtered_data_points
+                self.filtered_data_points = [
+                    {
+                        "weight": dp["weight"],
+                        "temperature": dp["temperature"],
+                        "accel_x": dp["accel_x"],
+                        "accel_y": dp["accel_y"],
+                        "accel_z": dp["accel_z"]
+                    } for dp in self.data_points
+                ]
+        else:
+            self.log("Filters will not be applied to sensor data. Using raw data.")
+            # Copy raw data to filtered_data_points
+            self.filtered_data_points = [
+                {
+                    "weight": dp["weight"],
+                    "temperature": dp["temperature"],
+                    "accel_x": dp["accel_x"],
+                    "accel_y": dp["accel_y"],
+                    "accel_z": dp["accel_z"]
+                } for dp in self.data_points
+            ]    
+    
     def update_plot(self, sensor_data):
         """Update the real-time plots with new sensor data."""
         if not self.is_capturing:
@@ -639,11 +759,14 @@ class BluetoothDashboard(QMainWindow):
         accel_x = sensor_data["acceleration"][0]
         accel_y = sensor_data["acceleration"][1]
         accel_z = sensor_data["acceleration"][2]
+        weight = sensor_data["weight"]
+        temperature = sensor_data["temperature"]
 
+        # Append raw data
         self.data_points.append({
             "time": timestamp,
-            "weight": sensor_data["weight"],
-            "temperature": sensor_data["temperature"],
+            "weight": weight,
+            "temperature": temperature,
             "accel_x": accel_x,
             "accel_y": accel_y,
             "accel_z": accel_z
@@ -651,7 +774,9 @@ class BluetoothDashboard(QMainWindow):
 
         if len(self.data_points) > self.max_points:
             self.data_points.pop(0)
+            self.filtered_data_points.pop(0)
 
+        # Extract raw data arrays
         times = [dp["time"] - self.data_points[0]["time"] for dp in self.data_points]
         weights = [dp["weight"] for dp in self.data_points]
         temps = [dp["temperature"] for dp in self.data_points]
@@ -659,18 +784,94 @@ class BluetoothDashboard(QMainWindow):
         accel_ys = [dp["accel_y"] for dp in self.data_points]
         accel_zs = [dp["accel_z"] for dp in self.data_points]
 
-        self.weight_curve.setData(times, weights)
-        self.temp_curve.setData(times, temps)
+        # Initialize plot data (default to raw data)
+        plot_weight = weight
+        plot_temperature = temperature
+        plot_accel_x = accel_x
+        plot_accel_y = accel_y
+        plot_accel_z = accel_z
+
+        # Apply filters if enabled and filter module is loaded
+        if self.apply_filter and hasattr(self, "filter_module") and self.filter_module:
+            try:
+                if hasattr(self.filter_module, "filter_weight"):
+                    plot_weight = self.filter_module.filter_weight(weights)
+                if hasattr(self.filter_module, "filter_temperature"):
+                    plot_temperature = self.filter_module.filter_temperature(temps)
+                if hasattr(self.filter_module, "filter_accel"):
+                    plot_accel_x, plot_accel_y, plot_accel_z = self.filter_module.filter_accel(
+                        accel_xs, accel_ys, accel_zs
+                    )
+                elif hasattr(self.filter_module, "filter_accel_x"):
+                    plot_accel_x = self.filter_module.filter_accel_x(accel_xs)
+                    plot_accel_y = self.filter_module.filter_accel_y(accel_ys)
+                    plot_accel_z = self.filter_module.filter_accel_z(accel_zs)
+            except Exception as e:
+                self.log(f"Error applying filter: {e}. Using raw data.")
+                plot_weight = weight
+                plot_temperature = temperature
+                plot_accel_x = accel_x
+                plot_accel_y = accel_y
+                plot_accel_z = accel_z
+
+        # Append plot data to filtered_data_points
+        self.filtered_data_points.append({
+            "weight": plot_weight,
+            "temperature": plot_temperature,
+            "accel_x": plot_accel_x,
+            "accel_y": plot_accel_y,
+            "accel_z": plot_accel_z
+        })
+
+        if len(self.filtered_data_points) > self.max_points:
+            self.filtered_data_points.pop(0)
+
+        # Ensure synchronization
+        if len(self.filtered_data_points) != len(self.data_points):
+            self.log(f"Warning: filtered_data_points length ({len(self.filtered_data_points)}) does not match data_points length ({len(self.data_points)}). Synchronizing.")
+            self.filtered_data_points = self.filtered_data_points[-len(self.data_points):] if len(self.filtered_data_points) > len(self.data_points) else self.filtered_data_points + [
+                {
+                    "weight": dp["weight"],
+                    "temperature": dp["temperature"],
+                    "accel_x": dp["accel_x"],
+                    "accel_y": dp["accel_y"],
+                    "accel_z": dp["accel_z"]
+                } for dp in self.data_points[len(self.filtered_data_points):]
+            ]
+
+        # Extract plot data arrays
+        plot_weights = [dp["weight"] for dp in self.filtered_data_points]
+        plot_temps = [dp["temperature"] for dp in self.filtered_data_points]
+        plot_accel_xs = [dp["accel_x"] for dp in self.filtered_data_points]
+        plot_accel_ys = [dp["accel_y"] for dp in self.filtered_data_points]
+        plot_accel_zs = [dp["accel_z"] for dp in self.filtered_data_points]
+
+        # Convert to numpy arrays
+        times_arr = np.array(times, dtype=float)
+        weights_arr = np.array(plot_weights, dtype=float)
+        temps_arr = np.array(plot_temps, dtype=float)
+        accel_xs_arr = np.array(plot_accel_xs, dtype=float)
+        accel_ys_arr = np.array(plot_accel_ys, dtype=float)
+        accel_zs_arr = np.array(plot_accel_zs, dtype=float)
+
+        # Verify array lengths
+        if len(times_arr) != len(weights_arr):
+            self.log(f"Error: Mismatched array lengths - times: {len(times_arr)}, weights: {len(weights_arr)}")
+            return
+
+        # Update plots
+        self.weight_curve.setData(times_arr, weights_arr)
+        self.temp_curve.setData(times_arr, temps_arr)
 
         if self.accel_plots_visible:
-            self.accel_x_curve.setData(times, accel_xs)
-            self.accel_y_curve.setData(times, accel_ys)
-            self.accel_z_curve.setData(times, accel_zs)
-            if accel_xs:
-                z = accel_zs[-1]
-                color = pg.mkBrush((255, max(0, min(255, int(128 + z * 32))), 0))
-                self.accel_scatter.setData([accel_xs[-1]], [accel_ys[-1]], symbolBrush=color)
-
+            self.accel_x_curve.setData(times_arr, accel_xs_arr)
+            self.accel_y_curve.setData(times_arr, accel_ys_arr)
+            self.accel_z_curve.setData(times_arr, accel_zs_arr)
+            if len(accel_xs_arr) > 0:
+                last_x, last_y, last_z = accel_xs_arr[-1], accel_ys_arr[-1], accel_zs_arr[-1]
+                color = pg.mkBrush((255, max(0, min(255, int(128 + last_z * 32))), 0))
+                self.accel_scatter.setData([last_x], [last_y], symbolBrush=color)
+    
     def decode_sensor_data(self, data):
         """Decode sensor data from the characteristic with enhanced error handling."""
         try:
@@ -718,7 +919,7 @@ class BluetoothDashboard(QMainWindow):
                     return                  
                     
                 self.sample_count += 1
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  
                 try:
                     with open(self.csv_file, mode="a", newline="") as file:
                         writer = csv.writer(file)
@@ -730,6 +931,7 @@ class BluetoothDashboard(QMainWindow):
                             sensor_data["acceleration"][0],
                             sensor_data["acceleration"][1],
                             sensor_data["acceleration"][2],
+                            self.true_weight,
                             self.current_state
                         ])
                 except IOError as e:
@@ -858,7 +1060,7 @@ class BluetoothDashboard(QMainWindow):
             return
 
         self.current_state = self.state_input.text().strip() or "No State"   
-
+        self.true_weight = self.true_weight_input.text().strip() or "0"
         if not self.csv_file:
             self.log("Please select a CSV file.")
             return
@@ -889,8 +1091,7 @@ class BluetoothDashboard(QMainWindow):
     async def stop_capture(self):
         """Pause capturing data without disconnecting the device."""
         if not self.is_capturing:
-            self.log("No active capture to stop.")
-            return
+            self.log("No active capture to stop.")           
 
         try:
             uuid_index = self.uuid_combo.currentIndex() - 1
